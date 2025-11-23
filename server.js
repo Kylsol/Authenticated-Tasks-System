@@ -1,7 +1,15 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
-const { db, User, Project, Task } = require('./database/setup');
+const models = require('./database/setup');
+
+console.log("DEBUG models keys:", Object.keys(models));
+console.log("DEBUG models.User:", models.User);
+
+const { db, Project, Task } = models;
+const User = models.User || db.models.User; // fallback if export is weird
+
+
 
 console.log("DEBUG User model:", typeof User, User?.name);
 
