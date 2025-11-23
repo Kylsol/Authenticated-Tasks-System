@@ -1,11 +1,27 @@
 const express = require('express');
-const { db, Project, Task } = require('./database/setup');
+const bcrypt = require('bcryptjs');
+const session = require('express-session');
+const { db, User, Project, Task } = require('./database/setup');
+
+console.log("DEBUG User model:", typeof User, User?.name);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+
+//Session middleware (Step 9)
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'dev-secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: false,          
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000
+    }
+}));
 
 // Test database connection
 async function testConnection() {
@@ -19,12 +35,116 @@ async function testConnection() {
 
 testConnection();
 
+//Authentication middleware (Step 11)
+function requireAuth(req, res, next) {
+    if (req.session && req.session.userId) {
+        req.user = {
+            id: req.session.userId,
+            username: req.session.username,
+            email: req.session.email
+        };
+        return next();
+    }
+    return res.status(401).json({ error: 'Authentication required. Please log in.' });
+}
+
+//AUTH ROUTES
+
+// POST /api/register - Register new user (Step 7)
+app.post('/api/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+
+        // Basic validation
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: 'username, email, and password are required' });
+        }
+
+        // Check if user exists
+        const existingUser = await User.findOne({ where: { email } });
+        if (existingUser) {
+            return res.status(400).json({ error: 'User with this email already exists' });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create user
+        const newUser = await User.create({
+            username,
+            email,
+            password: hashedPassword
+        });
+
+        res.status(201).json({
+            message: 'User registered successfully',
+            user: {
+                id: newUser.id,
+                username: newUser.username,
+                email: newUser.email
+            }
+        });
+    } catch (error) {
+        console.error('Error registering user:', error);
+        res.status(500).json({ error: 'Failed to register user' });
+    }
+});
+
+// POST /api/login - User login + create session (Step 10)
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        // Find user by email
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        // Compare password to hash
+        const isValidPassword = await bcrypt.compare(password, user.password);
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        // Create session
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        req.session.email = user.email;
+
+        res.json({
+            message: 'Login successful',
+            user: {
+                id: user.id,
+                username: user.username,
+                email: user.email
+            }
+        });
+    } catch (error) {
+        console.error('Error logging in user:', error);
+        res.status(500).json({ error: 'Failed to login' });
+    }
+});
+
+// POST /api/logout - Destroy session (Step 13)
+app.post('/api/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            console.error('Error destroying session:', err);
+            return res.status(500).json({ error: 'Failed to logout' });
+        }
+        res.json({ message: 'Logout successful' });
+    });
+});
+
 // PROJECT ROUTES
 
-// GET /api/projects - Get all projects
-app.get('/api/projects', async (req, res) => {
+// GET /api/projects - Get all projects (Protected) (Step 12)
+app.get('/api/projects', requireAuth, async (req, res) => {
     try {
-        const projects = await Project.findAll();
+        const projects = await Project.findAll({
+            where: { userId: req.user.id }
+        });
         res.json(projects);
     } catch (error) {
         console.error('Error fetching projects:', error);
@@ -48,8 +168,8 @@ app.get('/api/projects/:id', async (req, res) => {
     }
 });
 
-// POST /api/projects - Create new project
-app.post('/api/projects', async (req, res) => {
+// POST /api/projects - Create new project (uses logged-in userId)
+app.post('/api/projects', requireAuth, async (req, res) => {
     try {
         const { name, description, status, dueDate } = req.body;
         
@@ -57,7 +177,8 @@ app.post('/api/projects', async (req, res) => {
             name,
             description,
             status,
-            dueDate
+            dueDate,
+            userId: req.user.id
         });
         
         res.status(201).json(newProject);
